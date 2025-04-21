@@ -1,0 +1,30 @@
+name: PR Chunk Analyzer
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install astpretty PyGithub
+
+      - name: Analyze PR chunks
+        run: python .github/scripts/split_pr_chunks.py > chunk_output.txt
+
+      - name: Comment on PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python .github/scripts/post_chunks_comment.py
