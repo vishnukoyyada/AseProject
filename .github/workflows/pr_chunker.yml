@@ -7,32 +7,37 @@ jobs:
   chunk_pr:
     runs-on: ubuntu-latest
     steps:
-    # Checkout the code
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # Needed for git history
+        fetch-depth: 0
     
-    # Set up Python
+    - name: Debug branch info
+      run: |
+        echo "Base ref: ${{ github.base_ref }}"
+        echo "Head ref: ${{ github.head_ref }}"
+        git branch -a
+        git log --oneline -n 5
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
     
-    # Install dependencies
     - name: Install dependencies
       run: |
         python -m pip install libcst gitpython pygithub
         
-    # Run our chunker script
-    - name: Analyze PR and create chunks
-      id: chunker
+    - name: Run PR chunker
       run: python scripts/pr_chunker.py
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
-        
-    # Create review checklist
+        BASE_REF: ${{ github.base_ref }}
+        HEAD_REF: ${{ github.head_ref }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+
     - name: Create review checklist
+      if: success()
       uses: peter-evans/create-issue-from-file@v4
       with:
         title: "Review Checklist for PR #${{ github.event.pull_request.number }}"
