@@ -75,5 +75,5 @@ jobs:
       with:
         title: "Review Checklist for PR #${{ github.event.pull_request.number }}"
         content-filepath: ./pr_chunks.md
-        token: ${{ secrets.GITHUB_TOKEN }}
+        token:  ${{ secrets.PAT_TOKEN }} 
         repository: ${{ github.repository }}
