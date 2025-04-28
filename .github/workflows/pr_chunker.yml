@@ -1,46 +1,48 @@
-name: PR Chunker Debug
+name: PR Chunker
 on:
   pull_request:
     types: [opened, synchronize]
 
+# Critical permissions for issue creation
 permissions:
   contents: read
   issues: write
   pull-requests: read
 
 jobs:
-  debug_and_run:
+  analyze_pr:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    # Checkout with full history
+    - name: Checkout code
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
-    - name: Set up Python
+    # Setup Python environment
+    - name: Set up Python 3.10
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
-    
-    - name: Install dependencies
+
+    # Install dependencies with cache
+    - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
         python -m pip install libcst gitpython pygithub
 
-    - name: Setup debug tools
-      run: |
-        sudo apt-get -y install jq
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-        sudo apt update
-        sudo apt install gh
-
-    - name: Debug - Environment
+    # Debug environment
+    - name: Debug - Show environment
       run: |
         echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
-        echo "GITHUB_WORKFLOW: $GITHUB_WORKFLOW"
-        echo "GITHUB_ACTOR: $GITHUB_ACTOR"
+        echo "PR_NUMBER: ${{ github.event.pull_request.number }}"
+        echo "BASE_SHA: ${{ github.event.pull_request.base.sha }}"
+        echo "HEAD_SHA: ${{ github.event.pull_request.head.sha }}"
+        git branch -a
+        git log --oneline -n 5
 
-    - name: Run PR chunker
+    # Run the chunker script
+    - name: Generate review chunks
       run: python scripts/pr_chunker.py
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -49,17 +51,26 @@ jobs:
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         GITHUB_REPOSITORY: ${{ github.repository }}
 
-    - name: Validate output
+    # Verify output file
+    - name: Validate output file
       run: |
         if [ ! -f "pr_chunks.md" ]; then
-          echo "Error: pr_chunks.md not generated!"
+          echo "❌ Error: pr_chunks.md not found!"
+          ls -la
           exit 1
         fi
-        echo "File generated successfully:"
-        head -n 10 pr_chunks.md
+        
+        if [ ! -s "pr_chunks.md" ]; then
+          echo "⚠️ Warning: pr_chunks.md is empty"
+          echo "Default content will be used"
+          echo "# No reviewable chunks found in PR #${{ github.event.pull_request.number }}" > pr_chunks.md
+        fi
+        
+        echo "pr_chunks.md content preview:"
+        head -n 5 pr_chunks.md
 
-    - name: Create issue
-      if: success()
+    # Create GitHub issue
+    - name: Create review checklist
       uses: peter-evans/create-issue-from-file@v4
       with:
         title: "Review Checklist for PR #${{ github.event.pull_request.number }}"
