@@ -37,6 +37,36 @@ def debug_print(*args, **kwargs):
     if DEBUG:
         print("[DEBUG]", *args, **kwargs)
 
+def get_file_content(repo: Repo, commit_sha: str, file_path: str) -> Optional[str]:
+    """Get file content at specific commit"""
+    try:
+        return repo.git.show(f"{commit_sha}:{file_path}")
+    except Exception as e:
+        debug_print(f"File not found at {commit_sha}: {file_path}")
+        return None
+
+def process_chunks(chunks: List[Tuple[str, str, Tuple[int, int]]], diff_text: str) -> List[Tuple[str, str, Tuple[int, int]]]:
+    """Filter chunks based on whether they intersect with lines in the diff"""
+    changed_lines = set()
+    for line in diff_text.splitlines():
+        if line.startswith("@@"):
+            # Parse the hunk header
+            parts = line.split(" ")
+            if len(parts) > 2:
+                added_info = parts[2]
+                if ',' in added_info:
+                    start, count = map(int, added_info[1:].split(","))
+                    changed_lines.update(range(start, start + count))
+                else:
+                    changed_lines.add(int(added_info[1:]))
+    
+    filtered_chunks = [
+        chunk for chunk in chunks
+        if any(l in changed_lines for l in range(chunk[2][0], chunk[2][1] + 1))
+    ]
+    
+    return filtered_chunks
+
 def analyze_changes(repo: Repo, base: str, head: str) -> Dict[str, List]:
     """Enhanced change analysis with diff context"""
     try:
@@ -76,6 +106,34 @@ def analyze_changes(repo: Repo, base: str, head: str) -> Dict[str, List]:
         traceback.print_exc()
         raise
 
+def generate_output(
+    chunks: Dict[str, List[Tuple[str, str, Tuple[int, int]]]],
+    pr_number: int,
+    repo_name: str,
+    output_file: str,
+    min_lines: int,
+    max_lines: int
+):
+    """Generate markdown file of chunks"""
+    try:
+        with open(output_file, "w") as f:
+            f.write(f"# Code Chunks in PR #{pr_number} - {repo_name}\n\n")
+            for file, items in chunks.items():
+                if not items:
+                    continue
+                f.write(f"## `{file}`\n\n")
+                for item_type, name, (start, end) in items:
+                    lines = end - start + 1
+                    if lines < min_lines or lines > max_lines:
+                        continue
+                    f.write(f"- `{item_type}` **{name}** (lines {start}-{end}, {lines} lines)\n")
+                f.write("\n")
+        debug_print(f"✅ Output written to {output_file}")
+    except Exception as e:
+        print(f"❌ Error writing output: {str(e)}")
+        traceback.print_exc()
+        raise
+
 def main():
     """Main entry point with enhanced error handling"""
     try:
@@ -100,7 +158,14 @@ def main():
 
         repo = Repo(os.getcwd())
         debug_print(f"Repo initialized at: {repo.working_dir}")
-        debug_print(f"Active branch: {repo.active_branch}")
+
+        try:
+            if repo.head.is_detached:
+                debug_print(f"Detached HEAD at commit: {repo.head.commit.hexsha[:7]}")
+            else:
+                debug_print(f"Active branch: {repo.active_branch.name}")
+        except Exception as e:
+            debug_print(f"Could not determine branch state: {str(e)}")
 
         chunks = analyze_changes(repo, args.base, args.head)
         generate_output(
