@@ -99,7 +99,7 @@ def analyze_changes(repo: Repo, base: str, head: str) -> Dict[str, List]:
         traceback.print_exc()
         raise
 
-def generate_output(chunks: Dict, pr_number: int, repo_name: str, output_file: str):
+def generate_output(chunks: Dict, pr_number: int, repo_name: str, output_file: str, head: str):
     """Generate markdown output"""
     try:
         with open(output_file, 'w') as f:
@@ -153,7 +153,8 @@ def main():
             chunks=chunks,
             pr_number=args.pr,
             repo_name=args.repo,
-            output_file=args.output
+            output_file=args.output,
+            head=args.head  # Pass head here
         )
         
         debug_print("Chunker completed successfully")
