@@ -8,7 +8,14 @@ from typing import Dict, List, Optional, Tuple
 import traceback
 import sys
 
+# Configuration
 DEBUG = True  # Set to False in production
+
+# Debug utilities
+def debug_print(*args, **kwargs):
+    """Conditional debug output"""
+    if DEBUG:
+        print("[DEBUG]", *args, **kwargs)
 
 class ChunkCollector(cst.CSTVisitor):
     """Enhanced collector with line number tracking"""
@@ -26,7 +33,6 @@ class ChunkCollector(cst.CSTVisitor):
         return False
     
     def _add_chunk(self, type_: str, node):
-        # Get line numbers from metadata
         metadata = self.get_metadata(cst.metadata.PositionProvider, node)
         start = metadata.start.line
         end = metadata.end.line
@@ -37,7 +43,15 @@ class ChunkCollector(cst.CSTVisitor):
             (start, end)
         ))
         if DEBUG:
-            print(f"Found {type_}: {node.name.value} (lines {start}-{end})")
+            debug_print(f"Found {type_}: {node.name.value} (lines {start}-{end})")
+
+def get_file_content(repo: Repo, commit_sha: str, file_path: str) -> Optional[str]:
+    """Get file content at specific commit"""
+    try:
+        return repo.git.show(f"{commit_sha}:{file_path}")
+    except Exception as e:
+        debug_print(f"File not found at {commit_sha}: {file_path} - {str(e)}")
+        return None
 
 def analyze_changes(repo: Repo, base: str, head: str) -> Dict[str, List]:
     """Enhanced change analysis with diff context"""
@@ -55,9 +69,11 @@ def analyze_changes(repo: Repo, base: str, head: str) -> Dict[str, List]:
                 debug_print(f"\nProcessing {file_path}")
                 
                 new_content = get_file_content(repo, head, file_path)
+                if not new_content:
+                    continue
+                    
                 debug_print(f"File size: {len(new_content)} bytes")
 
-                # Parse with position metadata
                 wrapper = cst.metadata.MetadataWrapper(
                     cst.parse_module(new_content)
                 )
@@ -65,7 +81,10 @@ def analyze_changes(repo: Repo, base: str, head: str) -> Dict[str, List]:
                 wrapper.visit(collector)
                 
                 file_diff = repo.git.diff(f"{base}..{head}", "--unified=0", file_path)
-                chunks[file_path] = process_chunks(collector.chunks, file_diff)
+                chunks[file_path] = [
+                    (typ, name, lines) 
+                    for typ, name, lines in collector.chunks
+                ]
                 
             except Exception as e:
                 print(f"⚠️ Error processing {file_path}: {str(e)}")
@@ -80,18 +99,40 @@ def analyze_changes(repo: Repo, base: str, head: str) -> Dict[str, List]:
         traceback.print_exc()
         raise
 
-# [Rest of your existing functions remain the same...]
+def generate_output(chunks: Dict, pr_number: int, repo_name: str, output_file: str):
+    """Generate markdown output"""
+    try:
+        with open(output_file, 'w') as f:
+            f.write(f"# PR #{pr_number} Review Chunks\n\n")
+            f.write(f"**Repository**: {repo_name}\n\n")
+            
+            if not chunks:
+                f.write("No reviewable chunks found.\n")
+                return
+                
+            for file_path, file_chunks in chunks.items():
+                f.write(f"## 📄 {file_path}\n\n")
+                for typ, name, (start, end) in file_chunks:
+                    f.write(f"### {'🔹' if typ == 'function' else '🔸'} {name}\n")
+                    f.write(f"Lines {start}-{end}\n\n")
+                    f.write(f"[View Code](https://github.com/{repo_name}/blob/{head}/{file_path}#L{start}-L{end})\n\n")
+                f.write("---\n\n")
+                
+        debug_print(f"Output written to {output_file}")
+        
+    except Exception as e:
+        print(f"❌ Error generating output: {str(e)}")
+        traceback.print_exc()
+        raise
 
 def main():
-    """Main entry point with enhanced error handling"""
+    """Main entry point"""
     try:
         parser = argparse.ArgumentParser()
         parser.add_argument("--repo", required=True)
         parser.add_argument("--pr", type=int, required=True)
         parser.add_argument("--base", required=True)
         parser.add_argument("--head", required=True)
-        parser.add_argument("--min-lines", type=int, default=200)
-        parser.add_argument("--max-lines", type=int, default=800)
         parser.add_argument("--output", default="chunks.md")
         args = parser.parse_args()
 
@@ -100,8 +141,8 @@ def main():
         debug_print("="*40)
         debug_print(f"Repository: {args.repo}")
         debug_print(f"PR Number: {args.pr}")
-        debug_print(f"Base SHA: {args.base}")
-        debug_print(f"Head SHA: {args.head}")
+        debug_print(f"Base SHA: {args.base[:7]}")
+        debug_print(f"Head SHA: {args.head[:7]}")
         debug_print(f"Output file: {args.output}\n")
 
         repo = Repo(os.getcwd())
@@ -112,15 +153,13 @@ def main():
             chunks=chunks,
             pr_number=args.pr,
             repo_name=args.repo,
-            output_file=args.output,
-            min_lines=args.min_lines,
-            max_lines=args.max_lines
+            output_file=args.output
         )
         
-        debug_print("\nChunker completed successfully")
+        debug_print("Chunker completed successfully")
         
     except Exception as e:
-        print(f"\n❌ Fatal error in PR Chunker: {str(e)}")
+        print(f"\n❌ Fatal error: {str(e)}")
         traceback.print_exc()
         sys.exit(1)
 
