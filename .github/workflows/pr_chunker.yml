@@ -74,14 +74,14 @@ jobs:
           echo "Chunks generated:"
           head -n 20 chunks.md || echo "No chunks file"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}  # Use PAT for better permissions
 
       # Post chunks as PR comment (with token verification)
       - name: Post chunk summary
         if: steps.chunker.outcome == 'success'
         uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PAT_TOKEN }}  # Use PAT for forked repos
           script: |
             const fs = require('fs');
             
@@ -110,7 +110,7 @@ jobs:
         with:
           title: "PR#${{ github.event.number }} Review Checklist"
           content-filepath: ./chunks.md
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
           labels: "code-review"
           assignees: ${{ github.event.pull_request.requested_reviewers.*.login }}
 
@@ -119,8 +119,9 @@ jobs:
         if: steps.chunker.outcome != 'success'
         uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PAT_TOKEN }}  # Use PAT for error handling
           script: |
+            const core = require('@actions/core');
             try {
               const errorMsg = `⚠️ Chunking failed for PR #${{ github.event.number }}\n\n` +
                 `Error details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n` +
@@ -133,6 +134,7 @@ jobs:
                 body: errorMsg
               });
               
+              // Also log to workflow run
               core.error(errorMsg);
             } catch (secondaryError) {
               core.error('Failed to post error comment: ' + secondaryError.message);
