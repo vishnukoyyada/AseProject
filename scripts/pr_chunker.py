@@ -1,183 +1,148 @@
 import os
+import argparse
 import libcst as cst
 from git import Repo
 from github import Github
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-class DefinitionCollector(cst.CSTVisitor):
-    """Collects function and class definitions from a CST tree."""
+class ChunkCollector(cst.CSTVisitor):
+    """Enhanced collector with line number tracking"""
     def __init__(self):
-        self.definitions = []
+        self.chunks = []
     
     def visit_FunctionDef(self, node: cst.FunctionDef) -> bool:
-        self.definitions.append(('function', node.name.value))
+        self._add_chunk('function', node)
         return False
         
     def visit_ClassDef(self, node: cst.ClassDef) -> bool:
-        self.definitions.append(('class', node.name.value))
+        self._add_chunk('class', node)
         return False
+    
+    def _add_chunk(self, type_: str, node):
+        self.chunks.append((
+            type_,
+            node.name.value,
+            (node.start.line, node.end.line)
+        ))
 
 def main():
-    """Main entry point for the PR chunker script."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--pr", type=int, required=True)
+    parser.add_argument("--base", required=True)
+    parser.add_argument("--head", required=True)
+    parser.add_argument("--min-lines", type=int, default=200)
+    parser.add_argument("--max-lines", type=int, default=800)
+    parser.add_argument("--output", default="chunks.md")
+    args = parser.parse_args()
+
     try:
-        # Initialize and validate environment
-        repo_path = os.getenv('GITHUB_WORKSPACE', '.')
-        github_token = os.getenv('GITHUB_TOKEN')
-        pr_number = int(os.getenv('PR_NUMBER', '0'))
-        base_sha = os.getenv('BASE_SHA')
-        head_sha = os.getenv('HEAD_SHA')
-        github_repo = os.getenv('GITHUB_REPOSITORY')
-
-        if not all([github_token, base_sha, head_sha]):
-            raise ValueError("Missing required environment variables")
-
-        print(f"Starting PR chunker for PR #{pr_number}")
-        print(f"Comparing {base_sha[:7]} (base)..{head_sha[:7]} (head) in {github_repo}")
-
-        # Initialize Git repo and GitHub client
-        repo = Repo(repo_path)
-        github_client = Github(github_token)
+        repo = Repo(os.getcwd())
+        gh = Github(os.getenv("GITHUB_TOKEN"))
         
-        # Fetch the specific commits we need to compare
-        repo.git.fetch('origin', base_sha)
-        repo.git.fetch('origin', head_sha)
-
-        # Analyze changes and generate output
-        chunks = analyze_pr_changes(repo, base_sha, head_sha)
-        generate_markdown_output(chunks, pr_number, github_repo, github_client)
-
+        # Get smart chunks
+        chunks = analyze_changes(repo, args.base, args.head)
+        
+        # Generate optimized output
+        generate_output(
+            chunks=chunks,
+            pr_number=args.pr,
+            repo_name=args.repo,
+            output_file=args.output,
+            min_lines=args.min_lines,
+            max_lines=args.max_lines
+        )
+        
     except Exception as e:
-        print(f"\nERROR: {str(e)}")
+        print(f"Error: {str(e)}")
         raise
 
-def analyze_pr_changes(repo: Repo, base_sha: str, head_sha: str) -> Dict[str, List]:
-    """Analyze changes between two commits and identify logical chunks."""
-    print(f"\nAnalyzing changes between {base_sha[:7]} and {head_sha[:7]}")
-    
-    # Get list of changed files
-    diff_cmd = f"{base_sha}..{head_sha}"
-    diffs = repo.git.diff(diff_cmd, name_only=True).split('\n')
-    diffs = [d.strip() for d in diffs if d.strip()]
-    
-    print(f"\nFound {len(diffs)} changed files:")
-    for file_path in diffs:
-        print(f" - {file_path}")
-
+def analyze_changes(repo: Repo, base: str, head: str) -> Dict[str, List]:
+    """Enhanced change analysis with diff context"""
+    changed_files = repo.git.diff(f"{base}..{head}", name_only=True).splitlines()
     chunks = {}
     
-    for file_path in diffs:
+    for file_path in changed_files:
         if not file_path.endswith('.py'):
             continue
             
         try:
-            print(f"\nProcessing {file_path}")
+            old_content = get_file_content(repo, base, file_path)
+            new_content = get_file_content(repo, head, file_path)
             
-            # Get diff and content for this file
-            file_diff = repo.git.diff(diff_cmd, file_path)
-            old_content = get_file_content(repo, base_sha, file_path)
-            new_content = get_file_content(repo, head_sha, file_path)
-
-            # Parse and analyze the code
-            old_tree = cst.parse_module(old_content) if old_content else None
+            # Parse with line number tracking
             new_tree = cst.parse_module(new_content)
-            file_chunks = identify_changed_components(old_tree, new_tree, file_diff)
+            collector = ChunkCollector()
+            new_tree.visit(collector)
             
-            if file_chunks:
-                chunks[file_path] = file_chunks
-                print(f"Found {len(file_chunks)} chunks in {file_path}")
-                
+            # Get file diff for context
+            file_diff = repo.git.diff(
+                f"{base}..{head}",
+                "--unified=0",
+                file_path
+            )
+            
+            chunks[file_path] = process_chunks(
+                collector.chunks,
+                file_diff
+            )
+            
         except Exception as e:
-            print(f"Error processing {file_path}: {str(e)}")
-            continue
-                
+            print(f"Skipping {file_path}: {str(e)}")
+            
     return chunks
 
-def get_file_content(repo: Repo, sha: str, file_path: str) -> str:
-    """Get file content at a specific commit."""
-    try:
-        return repo.git.show(f"{sha}:{file_path}")
-    except:
-        return ""  # File didn't exist at this commit
-
-def identify_changed_components(
-    old_tree: Optional[cst.Module], 
-    new_tree: cst.Module, 
-    file_diff: str
-) -> List[Dict]:
-    """Identify changed functions/classes in the diff."""
-    collector = DefinitionCollector()
-    new_tree.visit(collector)
-    
-    chunks = []
-    for def_type, def_name in collector.definitions:
-        chunk_diff = extract_definition_diff(file_diff, def_type, def_name)
+def process_chunks(chunks: List[Tuple], diff: str) -> List[Dict]:
+    """Enrich chunks with diff context"""
+    result = []
+    for type_, name, (start, end) in chunks:
+        chunk_diff = extract_context(diff, type_, name, start, end)
         if chunk_diff:
-            chunks.append({
-                'name': def_name,
-                'type': def_type,
+            result.append({
+                'type': type_,
+                'name': name,
+                'lines': (start, end),
                 'diff': chunk_diff
             })
-    
-    return chunks
+    return result
 
-def extract_definition_diff(
-    full_diff: str, 
-    def_type: str, 
-    def_name: str
-) -> Optional[str]:
-    """Extract the diff for a specific definition from the full file diff."""
-    lines = full_diff.split('\n')
+def extract_context(diff: str, type_: str, name: str, start: int, end: int) -> str:
+    """Smart diff extraction with surrounding context"""
+    # Implementation optimized for GitHub diff format
+    lines = diff.splitlines()
     chunk_lines = []
-    in_chunk = False
+    found = False
     
     for line in lines:
-        # Check for start of our definition
-        if not in_chunk:
-            if def_type == 'function' and line.startswith('+def ') and def_name in line:
-                in_chunk = True
-            elif def_type == 'class' and line.startswith('+class ') and def_name in line:
-                in_chunk = True
-            continue
-            
-        # Collect lines until we hit a break
-        chunk_lines.append(line)
-        if line.strip() == '' or line.startswith('diff --git'):
-            break
-    
-    return '\n'.join(chunk_lines) if chunk_lines else None
+        if not found:
+            if (type_ == 'function' and f"def {name}(" in line) or \
+               (type_ == 'class' and f"class {name}(" in line):
+                found = True
+                chunk_lines.append(f"@@ -{start},0 +{end},0 @@")
+        if found:
+            chunk_lines.append(line)
+            if len(chunk_lines) > 50:  # Reasonable context limit
+                break
+                
+    return '\n'.join(chunk_lines) if found else None
 
-def generate_markdown_output(
-    chunks: Dict[str, List], 
-    pr_number: int, 
-    github_repo: str, 
-    github_client: Github
-):
-    """Generate markdown output with review chunks."""
-    print("\nGenerating markdown output...")
-    
-    with open('pr_chunks.md', 'w') as f:
-        # Header
+def generate_output(chunks: Dict, pr_number: int, repo_name: str, 
+                  output_file: str, min_lines: int, max_lines: int):
+    """Optimized markdown generation"""
+    with open(output_file, 'w') as f:
         f.write(f"# PR #{pr_number} Review Chunks\n\n")
-        f.write(f"Repository: {github_repo}\n\n")
+        f.write(f"**Repository**: {repo_name}\n")
+        f.write(f"**Chunk Size**: {min_lines}-{max_lines} lines\n\n")
         
-        if not chunks:
-            f.write("No Python files with reviewable chunks found.\n")
-            return
-        
-        # Summary
-        total_chunks = sum(len(v) for v in chunks.values())
-        f.write(f"## Summary\nFound {total_chunks} reviewable chunks across {len(chunks)} files.\n\n")
-        
-        # File sections
         for file_path, file_chunks in chunks.items():
-            f.write(f"## File: `{file_path}`\n\n")
-            
+            f.write(f"## 📄 {file_path}\n\n")
             for chunk in file_chunks:
-                f.write(f"### {chunk['type'].title()} `{chunk['name']}`\n")
+                f.write(f"### {'🔹' if chunk['type'] == 'function' else '🔸'} {chunk['name']}\n")
+                f.write(f"*Lines {chunk['lines'][0]}-{chunk['lines'][1]}*\n\n")
                 f.write("```diff\n")
                 f.write(chunk['diff'])
                 f.write("\n```\n\n")
-                f.write("---\n\n")
+                f.write("[Add Review Comment](#)\n\n---\n\n")
 
 if __name__ == "__main__":
     main()
