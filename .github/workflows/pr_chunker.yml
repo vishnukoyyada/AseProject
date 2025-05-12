@@ -1,79 +1,111 @@
 name: PR Chunker
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, reopened, synchronize]
+    branches: [ main ]
 
-# Critical permissions for issue creation
+# Fine-grained permissions
 permissions:
   contents: read
+  pull-requests: write
   issues: write
-  pull-requests: read
+  discussions: write
 
 jobs:
-  analyze_pr:
+  chunk-and-assign:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-    # Checkout with full history
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      # Checkout with full history
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false  # Better security
 
-    # Setup Python environment
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
+      # Setup Python with caching
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: 'scripts/pr_review/requirements.txt'
 
-    # Install dependencies with cache
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install libcst gitpython pygithub
+      # Install dependencies with cache
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r scripts/pr_review/requirements.txt
 
-    # Debug environment
-    - name: Debug - Show environment
-      run: |
-        echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
-        echo "PR_NUMBER: ${{ github.event.pull_request.number }}"
-        echo "BASE_SHA: ${{ github.event.pull_request.base.sha }}"
-        echo "HEAD_SHA: ${{ github.event.pull_request.head.sha }}"
-        git branch -a
-        git log --oneline -n 5
+      # Debug info
+      - name: Show PR context
+        run: |
+          echo "PR Number: ${{ github.event.number }}"
+          echo "Base SHA: ${{ github.event.pull_request.base.sha }}"
+          echo "Head SHA: ${{ github.event.pull_request.head.sha }}"
+          echo "Changed files:"
+          git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} || echo "No changes"
 
-    # Run the chunker script
-    - name: Generate review chunks
-      run: python scripts/pr_chunker.py
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-        BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
+      # Run chunker with improved error handling
+      - name: Generate review chunks
+        id: chunker
+        run: |
+          python scripts/pr_review/chunker.py \
+            --repo ${{ github.repository }} \
+            --pr ${{ github.event.number }} \
+            --base ${{ github.event.pull_request.base.sha }} \
+            --head ${{ github.event.pull_request.head.sha }} \
+            --min-lines 200 \
+            --max-lines 800 \
+            --output chunks.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}  # Using your PAT_TOKEN
 
-    # Verify output file
-    - name: Validate output file
-      run: |
-        if [ ! -f "pr_chunks.md" ]; then
-          echo "❌ Error: pr_chunks.md not found!"
-          ls -la
-          exit 1
-        fi
-        
-        if [ ! -s "pr_chunks.md" ]; then
-          echo "⚠️ Warning: pr_chunks.md is empty"
-          echo "Default content will be used"
-          echo "# No reviewable chunks found in PR #${{ github.event.pull_request.number }}" > pr_chunks.md
-        fi
-        
-        echo "pr_chunks.md content preview:"
-        head -n 5 pr_chunks.md
+      # Post chunks as PR comment
+      - name: Post chunk summary
+        if: steps.chunker.outcome == 'success'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.PAT_TOKEN }}
+          script: |
+            const fs = require('fs');
+            try {
+              const content = fs.readFileSync('chunks.md', 'utf8');
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: content
+              });
+            } catch (error) {
+              core.error("Failed to post comment: " + error.message);
+              throw error;
+            }
 
-    # Create GitHub issue
-    - name: Create review checklist
-      uses: peter-evans/create-issue-from-file@v4
-      with:
-        title: "Review Checklist for PR #${{ github.event.pull_request.number }}"
-        content-filepath: ./pr_chunks.md
-        token:  ${{ secrets.PAT_TOKEN }} 
-        repository: ${{ github.repository }}
+      # Create review checklist issue
+      - name: Create review issue
+        if: steps.chunker.outcome == 'success'
+        uses: peter-evans/create-issue-from-file@v4
+        with:
+          title: "PR#${{ github.event.number }} Review Checklist"
+          content-filepath: ./chunks.md
+          token: ${{ secrets.PAT_TOKEN }}  # Using your PAT_TOKEN
+          labels: "code-review"
+          assignees: ${{ github.event.pull_request.requested_reviewers.*.login }}
+          projects: ${{ github.event.pull_request.head.repo.owner.login }}/projects/1  # Optional project board
+
+      # Fallback if chunking fails
+      - name: Post error notice
+        if: steps.chunker.outcome != 'success'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.PAT_TOKEN }}
+          script: |
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: "⚠️ Could not generate review chunks. Please review this PR manually.\n\n" +
+                    "Error details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            });
