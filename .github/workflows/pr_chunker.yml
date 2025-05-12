@@ -1,8 +1,7 @@
-name: PR Chunker
+name: PR Chunker with Debugging
 on:
   pull_request:
     types: [opened, reopened, synchronize]
-    branches: [ main ]
 
 permissions:
   contents: read
@@ -13,75 +12,137 @@ jobs:
   chunk-and-assign:
     runs-on: ubuntu-latest
     steps:
+      # Debug: Print environment context
+      - name: Debug - Environment Context
+        run: |
+          echo "GITHUB_REF: $GITHUB_REF"
+          echo "GITHUB_SHA: $GITHUB_SHA"
+          echo "PR_NUMBER: ${{ github.event.number }}"
+          echo "BASE_REF: ${{ github.event.pull_request.base.ref }}"
+          echo "HEAD_REF: ${{ github.event.pull_request.head.ref }}"
+
+      # Checkout with full history
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
+      # Debug: Verify checkout
+      - name: Debug - Checkout Verification
+        run: |
+          echo "Current branch: $(git branch --show-current)"
+          echo "Last commit: $(git log -1 --oneline)"
+          echo "Changed files:"
+          git diff --name-only ${{ github.event.pull_request.base.sha }}..HEAD || echo "No changes"
+
+      # Setup Python with caching
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
           cache: 'pip'
+          cache-dependency-path: 'scripts/pr_review/requirements.txt'
 
+      # Install dependencies with debug output
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r scripts/pr_review/requirements.txt
+          python -m pip install --upgrade pip
+          pip install -r scripts/pr_review/requirements.txt --verbose
+          echo "Installed packages:"
+          pip list
 
+      # Debug: Verify Python environment
+      - name: Debug - Python Environment
+        run: |
+          python --version
+          python -c "import sys; print(sys.path)"
+          python -c "import libcst, git, github; print('All imports work')" || echo "Import error"
+
+      # Run chunker with error handling
       - name: Generate review chunks
         id: chunker
         run: |
+          set -e  # Exit immediately on error
           python scripts/pr_review/chunker.py \
             --repo ${{ github.repository }} \
             --pr ${{ github.event.number }} \
             --base ${{ github.event.pull_request.base.sha }} \
             --head ${{ github.event.pull_request.head.sha }} \
             --output chunks.md
+          echo "Chunks generated:"
+          head -n 20 chunks.md || echo "No chunks file"
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Post chunks as PR comment (with token verification)
       - name: Post chunk summary
         if: steps.chunker.outcome == 'success'
         uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.PAT_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
+            const core = require('@actions/core');
+            
             try {
+              core.info('Verifying token permissions...');
+              const tokenTest = await github.rest.repos.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo
+              });
+              
+              core.info('Reading chunks file...');
               const content = fs.readFileSync('chunks.md', 'utf8');
+              
+              core.info('Posting comment...');
               await github.rest.issues.createComment({
                 issue_number: context.issue.number,
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 body: content
               });
+              core.info('Comment posted successfully');
             } catch (error) {
-              core.error("Failed to post comment: " + error.message);
+              core.error('Failed to post comment: ' + error.message);
+              core.debug(JSON.stringify(error, null, 2));
               throw error;
             }
 
+      # Create review checklist issue
       - name: Create review issue
         if: steps.chunker.outcome == 'success'
         uses: peter-evans/create-issue-from-file@v4
         with:
           title: "PR#${{ github.event.number }} Review Checklist"
           content-filepath: ./chunks.md
-          token: ${{ secrets.PAT_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           labels: "code-review"
           assignees: ${{ github.event.pull_request.requested_reviewers.*.login }}
 
+      # Enhanced error handling
       - name: Post error notice
         if: steps.chunker.outcome != 'success'
         uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.PAT_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: "⚠️ Could not generate review chunks. Please review this PR manually.\n\n" +
-                    "Error details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            });
+            const core = require('@actions/core');
+            try {
+              const errorMsg = `⚠️ Chunking failed for PR #${{ github.event.number }}\n\n` +
+                `Error details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n` +
+                `Please review this PR manually.`;
+              
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: errorMsg
+              });
+              
+              // Also log to workflow run
+              core.error(errorMsg);
+            } catch (secondaryError) {
+              core.error('Failed to post error comment: ' + secondaryError.message);
+              throw secondaryError;
+            }
