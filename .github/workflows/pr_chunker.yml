@@ -2,13 +2,12 @@ name: PR Chunker
 on:
   pull_request:
     types: [opened, reopened, synchronize]
-    branches: [ main ]
 
-# Required permissions (critical fix)
+# Critical permissions setup
 permissions:
   contents: read
   issues: write
-  pull-requests: write  # This enables PR comments
+  pull-requests: write  # Essential for PR comments
   repository-projects: write
 
 jobs:
@@ -17,12 +16,12 @@ jobs:
     timeout-minutes: 10
     
     steps:
-      # 1. Checkout code
-      - name: Checkout repository
+      # 1. Checkout with full history
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: true  # Important for token access
 
       # 2. Setup Python
       - name: Set up Python
@@ -33,10 +32,9 @@ jobs:
 
       # 3. Install dependencies
       - name: Install dependencies
-        run: |
-          pip install -r scripts/pr_review/requirements.txt
+        run: pip install -r scripts/pr_review/requirements.txt
 
-      # 4. Generate review chunks
+      # 4. Generate chunks
       - name: Generate review chunks
         id: generate-chunks
         run: |
@@ -47,32 +45,33 @@ jobs:
             --head ${{ github.event.pull_request.head.sha }} \
             --output chunks.md
 
-      # 5. Post PR comment (fixed version)
-      - name: Post PR comment with chunks
+      # 5. Post PR comment (working version)
+      - name: Post PR comment
         if: steps.generate-chunks.outcome == 'success'
         uses: actions/github-script@v6
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
             try {
               const content = fs.readFileSync('chunks.md', 'utf8');
+              // Use issues.createComment for PR comments
               await github.rest.issues.createComment({
                 issue_number: context.issue.number,
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 body: content
               });
+              console.log('Successfully posted PR comment');
             } catch (error) {
-              console.error('Comment post failed. Ensure:');
-              console.error('1. Token has "pull-requests: write" permission');
-              console.error('2. Repository allows workflow permissions');
+              console.error('Failed to post comment. Verify:');
+              console.error('1. Repository Settings > Actions > Workflow Permissions');
+              console.error('2. Token has "pull-requests: write" scope');
               console.error('Full error:', error);
               process.exit(1);
             }
 
-      # 6. Create review issue
+      # 6. Create tracking issue
       - name: Create review issue
         if: steps.generate-chunks.outcome == 'success'
         uses: peter-evans/create-issue-from-file@v4
@@ -86,14 +85,13 @@ jobs:
       - name: Post failure notice
         if: steps.generate-chunks.outcome != 'success'
         uses: actions/github-script@v6
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `❌ Automatic chunking failed for PR #${{ github.event.number }}\n\n` +
+              body: `❌ Automatic chunking failed\n\n` +
                     `Please review manually: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.number }}`
             });
