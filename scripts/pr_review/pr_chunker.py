@@ -4,6 +4,10 @@ import libcst as cst
 from git import Repo
 from github import Github
 from typing import Dict, List, Optional, Tuple
+from dotenv import load_dotenv
+
+
+load_dotenv()  # Loads .env file
 
 class ChunkCollector(cst.CSTVisitor):
     """Enhanced collector with line number tracking"""
@@ -38,7 +42,7 @@ def main():
 
     try:
         repo = Repo(os.getcwd())
-        gh = Github(os.getenv("GITHUB_TOKEN"))
+        gh = Github(os.getenv("PAT_TOKEN"))
         
         # Get smart chunks
         chunks = analyze_changes(repo, args.base, args.head)
