@@ -1,5 +1,4 @@
-name: PR Chunker with Debugging
-
+name: PR Chunker
 on:
   pull_request:
     types: [opened, reopened, synchronize]
@@ -13,71 +12,56 @@ jobs:
   chunk-and-assign:
     runs-on: ubuntu-latest
     steps:
+      # Debug environment
       - name: Debug - Environment Context
         run: |
           echo "GITHUB_REF: $GITHUB_REF"
           echo "GITHUB_SHA: $GITHUB_SHA"
           echo "PR_NUMBER: ${{ github.event.number }}"
-          echo "BASE_REF: ${{ github.event.pull_request.base.ref }}"
-          echo "HEAD_REF: ${{ github.event.pull_request.head.ref }}"
+          echo "TOKEN STATUS: ${{ secrets.PAT_TOKEN != '' }}"
 
+      # Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Debug - Checkout Verification
-        run: |
-          echo "Current branch: $(git branch --show-current)"
-          echo "Last commit: $(git log -1 --oneline)"
-          echo "Changed files:"
-          git diff --name-only ${{ github.event.pull_request.base.sha }}..HEAD || echo "No changes"
-
+      # Setup Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
           cache: 'pip'
-          cache-dependency-path: 'scripts/pr_review/requirements.txt'
 
+      # Install dependencies
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r scripts/pr_review/requirements.txt --verbose
-          echo "Installed packages:"
+          pip install -r scripts/pr_review/requirements.txt
           pip list
 
-      - name: Debug - Python Environment
-        run: |
-          python --version
-          python -c "import sys; print(sys.path)"
-          python -c "import libcst, git, github; print('All imports work')" || echo "Import error"
-
+      # Generate chunks
       - name: Generate review chunks
         id: chunker
         run: |
-          set -e
           python scripts/pr_review/chunker.py \
             --repo ${{ github.repository }} \
             --pr ${{ github.event.number }} \
             --base ${{ github.event.pull_request.base.sha }} \
             --head ${{ github.event.pull_request.head.sha }} \
             --output chunks.md
-          echo "Chunks generated:"
-          head -n 20 chunks.md || echo "No chunks file"
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Post PR comment (simplified)
       - name: Post chunk summary
         if: steps.chunker.outcome == 'success'
         uses: actions/github-script@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          github-token: ${{ secrets.PAT_TOKEN }}
           script: |
             const fs = require('fs');
-            const core = require('@actions/core');
-
             try {
               const content = fs.readFileSync('chunks.md', 'utf8');
               await github.rest.issues.createComment({
@@ -86,41 +70,31 @@ jobs:
                 repo: context.repo.repo,
                 body: content
               });
-              core.info('Comment posted successfully');
             } catch (error) {
-              core.setFailed('Failed to post comment: ' + error.message);
+              console.error('Failed to post comment:', error);
             }
 
+      # Create review issue
       - name: Create review issue
         if: steps.chunker.outcome == 'success'
         uses: peter-evans/create-issue-from-file@v4
         with:
           title: "PR#${{ github.event.number }} Review Checklist"
           content-filepath: ./chunks.md
-          token: ${{ secrets.PAT_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           labels: "code-review"
-          assignees: ${{ github.event.pull_request.requested_reviewers.*.login }}
 
+      # Error handling
       - name: Post error notice
         if: steps.chunker.outcome != 'success'
         uses: actions/github-script@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          github-token: ${{ secrets.PAT_TOKEN }}
           script: |
-            const core = require('@actions/core');
-            try {
-              const errorMsg = `⚠️ Chunking failed for PR #${{ github.event.number }}\n\n` +
-                `Error details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n` +
-                `Please review this PR manually.`;
-
-              await github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: errorMsg
-              });
-
-              core.error(errorMsg);
-            } catch (secondaryError) {
-              core.setFailed('Failed to post error comment: ' + secondaryError.message);
-            }
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `⚠️ Chunking failed. Please review manually:\n${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
+            });
