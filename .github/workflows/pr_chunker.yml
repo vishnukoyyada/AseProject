@@ -45,7 +45,6 @@ jobs:
             --head ${{ github.event.pull_request.head.sha }} \
             --output chunks.md
 
-      # 5. Post PR comment
       - name: Post PR comment
         if: steps.generate-chunks.outcome == 'success'
         uses: actions/github-script@v6
@@ -60,6 +59,7 @@ jobs:
               repo: context.repo.repo,
               body: content
             });
+
 
       # 6. Create tracking issue
       - name: Create review issue
@@ -85,3 +85,4 @@ jobs:
               repo: context.repo.repo,
               body: `❌ Automatic chunking failed\n\nPlease review manually: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.number }}`
             });
+
