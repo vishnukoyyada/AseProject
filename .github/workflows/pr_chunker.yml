@@ -1,4 +1,5 @@
 name: PR Chunker with Debugging
+
 on:
   pull_request:
     types: [opened, reopened, synchronize]
@@ -83,15 +84,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            const core = require('@actions/core');
             
             try {
-              core.info('Verifying token permissions...');
-              const tokenTest = await github.rest.repos.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo
-              });
-              
               core.info('Reading chunks file...');
               const content = fs.readFileSync('chunks.md', 'utf8');
               
@@ -127,7 +121,6 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const core = require('@actions/core');
             try {
               const errorMsg = `⚠️ Chunking failed for PR #${{ github.event.number }}\n\n` +
                 `Error details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n` +
@@ -140,7 +133,6 @@ jobs:
                 body: errorMsg
               });
               
-              // Also log to workflow run
               core.error(errorMsg);
             } catch (secondaryError) {
               core.error('Failed to post error comment: ' + secondaryError.message);
