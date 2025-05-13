@@ -7,15 +7,32 @@ from github import Github
 from typing import Dict, List, Optional, Tuple
 import traceback
 import sys
+import openai  # For AI summary generation
 
 # Configuration
 DEBUG = True  # Set to False in production
+AI_API_KEY = "your-openai-api-key"  # Add your OpenAI API key
 
 # Debug utilities
 def debug_print(*args, **kwargs):
     """Conditional debug output"""
     if DEBUG:
         print("[DEBUG]", *args, **kwargs)
+
+# AI summary function
+def generate_ai_summary(text: str) -> str:
+    """Generate a summary using AI (OpenAI GPT-3)"""
+    try:
+        openai.api_key = AI_API_KEY
+        response = openai.Completion.create(
+            engine="text-davinci-003",
+            prompt=f"Please provide a brief summary for the following code:\n\n{text}",
+            max_tokens=100
+        )
+        return response.choices[0].text.strip()
+    except Exception as e:
+        debug_print(f"Error generating AI summary: {str(e)}")
+        return "AI Summary not available."
 
 class ChunkCollector(cst.CSTVisitor):
     """Enhanced collector with line number tracking"""
@@ -99,7 +116,21 @@ def analyze_changes(repo: Repo, base: str, head: str) -> Dict[str, List]:
         traceback.print_exc()
         raise
 
-def generate_output(chunks: Dict, pr_number: int, repo_name: str, output_file: str, head: str):
+def divide_chunks_among_reviewers(chunks: Dict[str, List], reviewers: List[str]) -> Dict[str, List[Dict]]:
+    """Divide chunks among multiple reviewers"""
+    reviewer_chunks = {reviewer: [] for reviewer in reviewers}
+    chunk_list = [(file, chunk) for file, chunks_in_file in chunks.items() for chunk in chunks_in_file]
+    
+    for idx, (file, chunk) in enumerate(chunk_list):
+        reviewer = reviewers[idx % len(reviewers)]
+        reviewer_chunks[reviewer].append({
+            'file': file,
+            'chunk': chunk
+        })
+    
+    return reviewer_chunks
+
+def generate_output(chunks: Dict, reviewers: List[str], pr_number: int, repo_name: str, output_file: str, head: str):
     """Generate markdown output"""
     try:
         with open(output_file, 'w') as f:
@@ -109,15 +140,24 @@ def generate_output(chunks: Dict, pr_number: int, repo_name: str, output_file: s
             if not chunks:
                 f.write("No reviewable chunks found.\n")
                 return
-                
-            for file_path, file_chunks in chunks.items():
-                f.write(f"## 📄 {file_path}\n\n")
-                for typ, name, (start, end) in file_chunks:
+            
+            # Divide chunks among reviewers if multiple
+            reviewer_chunks = divide_chunks_among_reviewers(chunks, reviewers)
+
+            for reviewer, reviewer_chunk in reviewer_chunks.items():
+                f.write(f"## Reviewer: {reviewer}\n\n")
+                for chunk in reviewer_chunk:
+                    file_path = chunk['file']
+                    typ, name, (start, end) = chunk['chunk']
                     f.write(f"### {'🔹' if typ == 'function' else '🔸'} {name}\n")
                     f.write(f"Lines {start}-{end}\n\n")
                     f.write(f"[View Code](https://github.com/{repo_name}/blob/{head}/{file_path}#L{start}-L{end})\n\n")
+                    # Generate AI summary
+                    code_snippet = get_file_content(Repo(os.getcwd()), head, file_path)[start-1:end]
+                    summary = generate_ai_summary(code_snippet)
+                    f.write(f"**AI Summary**: {summary}\n\n")
                 f.write("---\n\n")
-                
+        
         debug_print(f"Output written to {output_file}")
         
     except Exception as e:
@@ -134,6 +174,7 @@ def main():
         parser.add_argument("--base", required=True)
         parser.add_argument("--head", required=True)
         parser.add_argument("--output", default="chunks.md")
+        parser.add_argument("--reviewers", nargs='+', required=True)  # List of reviewers
         args = parser.parse_args()
 
         debug_print("\n" + "="*40)
@@ -151,6 +192,7 @@ def main():
         chunks = analyze_changes(repo, args.base, args.head)
         generate_output(
             chunks=chunks,
+            reviewers=args.reviewers,
             pr_number=args.pr,
             repo_name=args.repo,
             output_file=args.output,
