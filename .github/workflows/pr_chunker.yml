@@ -16,25 +16,25 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      # 1. Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
-      # 2. Setup Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+          cache: 'pip'
 
-      # 3. Install dependencies
       - name: Install dependencies
         run: pip install -r scripts/pr_review/requirements.txt
 
-      # 4. Generate chunks
       - name: Generate review chunks
         id: generate-chunks
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python scripts/pr_review/chunker.py \
             --repo ${{ github.repository }} \
@@ -42,13 +42,13 @@ jobs:
             --base ${{ github.event.pull_request.base.sha }} \
             --head ${{ github.event.pull_request.head.sha }} \
             --output chunks.md \
-            --reviewers "reviewer1" "reviewer2"  # Add reviewers here
+            --github-token ${{ secrets.GITHUB_TOKEN }}
 
       - name: Post PR comment
         if: steps.generate-chunks.outcome == 'success'
         uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.PAT_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
             const content = fs.readFileSync('chunks.md', 'utf8');
@@ -57,4 +57,27 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: content
+            });
+
+      - name: Create review issue
+        if: steps.generate-chunks.outcome == 'success'
+        uses: peter-evans/create-issue-from-file@v4
+        with:
+          title: "PR#${{ github.event.number }} Review Assignments"
+          content-filepath: ./chunks.md
+          labels: "code-review"
+          assignees: ${{ github.event.pull_request.requested_reviewers.*.login }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post failure notice
+        if: steps.generate-chunks.outcome != 'success'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `❌ Automatic chunking failed\n\nPlease review manually: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.number }}`
             });
