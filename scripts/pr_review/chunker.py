@@ -1,210 +1,152 @@
 #!/usr/bin/env python3
-import os
 import argparse
-import libcst as cst
-from git import Repo
-from github import Github
-from typing import Dict, List, Optional, Tuple
-import traceback
+import logging
+import os
 import sys
-import openai  # For AI summary generation
+from datetime import datetime
+from github import Github, GithubException
 
-# Configuration
-DEBUG = True  # Set to False in production
-AI_API_KEY = "your-openai-api-key"  # Add your OpenAI API key
+# Configure logging
+def setup_logging(debug=False):
+    log_level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('chunker_debug.log'),
+            logging.StreamHandler()
+        ]
+    )
+    logging.info("=== STARTING PR CHUNKER ===")
 
-# Debug utilities
-def debug_print(*args, **kwargs):
-    """Conditional debug output"""
-    if DEBUG:
-        print("[DEBUG]", *args, **kwargs)
+def parse_args():
+    parser = argparse.ArgumentParser(description='Split PR into review chunks')
+    parser.add_argument('--repo', required=True, help='GitHub repository in owner/repo format')
+    parser.add_argument('--pr', required=True, type=int, help='Pull request number')
+    parser.add_argument('--base', required=True, help='Base commit SHA')
+    parser.add_argument('--head', required=True, help='Head commit SHA')
+    parser.add_argument('--output', required=True, help='Output markdown file path')
+    parser.add_argument('--github-token', required=True, help='GitHub access token')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    return parser.parse_args()
 
-# AI summary function
-def generate_ai_summary(text: str) -> str:
-    """Generate a summary using AI (OpenAI GPT-3)"""
+def get_pr_diff(github_client, repo_name, pr_number):
+    logging.debug(f"Fetching PR #{pr_number} from repo {repo_name}")
     try:
-        openai.api_key = AI_API_KEY
-        response = openai.Completion.create(
-            engine="text-davinci-003",
-            prompt=f"Please provide a brief summary for the following code:\n\n{text}",
-            max_tokens=100
-        )
-        return response.choices[0].text.strip()
-    except Exception as e:
-        debug_print(f"Error generating AI summary: {str(e)}")
-        return "AI Summary not available."
-
-class ChunkCollector(cst.CSTVisitor):
-    """Enhanced collector with line number tracking"""
-    METADATA_DEPENDENCIES = (cst.metadata.PositionProvider,)
-    
-    def __init__(self):
-        self.chunks = []
-    
-    def visit_FunctionDef(self, node: cst.FunctionDef) -> bool:
-        self._add_chunk('function', node)
-        return False
+        repo = github_client.get_repo(repo_name)
+        pr = repo.get_pull(pr_number)
+        commits = list(pr.get_commits())
         
-    def visit_ClassDef(self, node: cst.ClassDef) -> bool:
-        self._add_chunk('class', node)
-        return False
-    
-    def _add_chunk(self, type_: str, node):
-        metadata = self.get_metadata(cst.metadata.PositionProvider, node)
-        start = metadata.start.line
-        end = metadata.end.line
+        logging.info(f"PR Title: {pr.title}")
+        logging.info(f"PR Author: {pr.user.login}")
+        logging.info(f"Commit count: {len(commits)}")
+        logging.debug(f"First commit: {commits[0].sha if commits else 'None'}")
+        logging.debug(f"Last commit: {commits[-1].sha if commits else 'None'}")
         
-        self.chunks.append((
-            type_,
-            node.name.value,
-            (start, end)
-        ))
-        if DEBUG:
-            debug_print(f"Found {type_}: {node.name.value} (lines {start}-{end})")
-
-def get_file_content(repo: Repo, commit_sha: str, file_path: str) -> Optional[str]:
-    """Get file content at specific commit"""
-    try:
-        return repo.git.show(f"{commit_sha}:{file_path}")
-    except Exception as e:
-        debug_print(f"File not found at {commit_sha}: {file_path} - {str(e)}")
-        return None
-
-def analyze_changes(repo: Repo, base: str, head: str) -> Dict[str, List]:
-    """Enhanced change analysis with diff context"""
-    try:
-        changed_files = repo.git.diff(f"{base}..{head}", name_only=True).splitlines()
-        debug_print(f"Changed files: {changed_files}")
-        
-        chunks = {}
-        for file_path in changed_files:
-            if not file_path.endswith('.py'):
-                debug_print(f"Skipping non-Python file: {file_path}")
-                continue
-                
-            try:
-                debug_print(f"\nProcessing {file_path}")
-                
-                new_content = get_file_content(repo, head, file_path)
-                if not new_content:
-                    continue
-                    
-                debug_print(f"File size: {len(new_content)} bytes")
-
-                wrapper = cst.metadata.MetadataWrapper(
-                    cst.parse_module(new_content)
-                )
-                collector = ChunkCollector()
-                wrapper.visit(collector)
-                
-                file_diff = repo.git.diff(f"{base}..{head}", "--unified=0", file_path)
-                chunks[file_path] = [
-                    (typ, name, lines) 
-                    for typ, name, lines in collector.chunks
-                ]
-                
-            except Exception as e:
-                print(f"⚠️ Error processing {file_path}: {str(e)}")
-                if DEBUG:
-                    traceback.print_exc()
-                continue
-                
-        return chunks
-        
-    except Exception as e:
-        print(f"❌ Critical error in analyze_changes: {str(e)}")
-        traceback.print_exc()
+        return pr
+    except GithubException as e:
+        logging.error(f"Failed to fetch PR: {str(e)}")
         raise
 
-def divide_chunks_among_reviewers(chunks: Dict[str, List], reviewers: List[str]) -> Dict[str, List[Dict]]:
-    """Divide chunks among multiple reviewers"""
-    reviewer_chunks = {reviewer: [] for reviewer in reviewers}
-    chunk_list = [(file, chunk) for file, chunks_in_file in chunks.items() for chunk in chunks_in_file]
+def process_changes(pr, base_sha, head_sha):
+    logging.info("Processing changes...")
+    files = pr.get_files()
+    file_changes = []
     
-    for idx, (file, chunk) in enumerate(chunk_list):
-        reviewer = reviewers[idx % len(reviewers)]
-        reviewer_chunks[reviewer].append({
-            'file': file,
-            'chunk': chunk
+    for file in files:
+        logging.debug(f"File: {file.filename}")
+        logging.debug(f"Status: {file.status}")
+        logging.debug(f"Changes: {file.changes} additions, {file.deletions} deletions")
+        logging.debug(f"Patch preview: {file.patch[:100] if file.patch else 'No patch'}")
+        
+        file_changes.append({
+            'filename': file.filename,
+            'status': file.status,
+            'additions': file.additions,
+            'deletions': file.deletions,
+            'patch': file.patch
         })
     
-    return reviewer_chunks
+    return file_changes
 
-def generate_output(chunks: Dict, reviewers: List[str], pr_number: int, repo_name: str, output_file: str, head: str):
-    """Generate markdown output"""
-    try:
-        with open(output_file, 'w') as f:
-            f.write(f"# PR #{pr_number} Review Chunks\n\n")
-            f.write(f"**Repository**: {repo_name}\n\n")
-            
-            if not chunks:
-                f.write("No reviewable chunks found.\n")
-                return
-            
-            # Divide chunks among reviewers if multiple
-            reviewer_chunks = divide_chunks_among_reviewers(chunks, reviewers)
+def create_chunks(file_changes):
+    logging.info("Creating review chunks...")
+    chunks = []
+    
+    # Simple chunking strategy - group by file type and size
+    for change in file_changes:
+        chunk = {
+            'files': [change['filename']],
+            'description': f"Review {change['filename']} ({change['status']})",
+            'changes': f"{change['additions']} additions, {change['deletions']} deletions",
+            'type': get_file_type(change['filename'])
+        }
+        chunks.append(chunk)
+        logging.debug(f"Created chunk: {chunk['description']}")
+    
+    # More sophisticated chunking logic would go here
+    logging.info(f"Created {len(chunks)} chunks")
+    return chunks
 
-            for reviewer, reviewer_chunk in reviewer_chunks.items():
-                f.write(f"## Reviewer: {reviewer}\n\n")
-                for chunk in reviewer_chunk:
-                    file_path = chunk['file']
-                    typ, name, (start, end) = chunk['chunk']
-                    f.write(f"### {'🔹' if typ == 'function' else '🔸'} {name}\n")
-                    f.write(f"Lines {start}-{end}\n\n")
-                    f.write(f"[View Code](https://github.com/{repo_name}/blob/{head}/{file_path}#L{start}-L{end})\n\n")
-                    # Generate AI summary
-                    code_snippet = get_file_content(Repo(os.getcwd()), head, file_path)[start-1:end]
-                    summary = generate_ai_summary(code_snippet)
-                    f.write(f"**AI Summary**: {summary}\n\n")
-                f.write("---\n\n")
+def get_file_type(filename):
+    if filename.endswith('.py'):
+        return 'python'
+    elif filename.endswith('.js') or filename.endswith('.ts'):
+        return 'javascript'
+    elif filename.endswith('.go'):
+        return 'golang'
+    elif filename.endswith('.md'):
+        return 'documentation'
+    return 'other'
+
+def generate_markdown(chunks, output_file):
+    logging.info(f"Generating markdown output to {output_file}")
+    
+    with open(output_file, 'w') as f:
+        f.write("# PR Review Chunks\n\n")
+        f.write("Here are the logical chunks for review:\n\n")
         
-        debug_print(f"Output written to {output_file}")
+        for i, chunk in enumerate(chunks, 1):
+            f.write(f"## Chunk {i}: {chunk['description']}\n")
+            f.write(f"- **Files**: {', '.join(chunk['files'])}\n")
+            f.write(f"- **Changes**: {chunk['changes']}\n")
+            f.write(f"- **Type**: {chunk['type']}\n\n")
         
-    except Exception as e:
-        print(f"❌ Error generating output: {str(e)}")
-        traceback.print_exc()
-        raise
+        f.write("\n## Review Instructions\n")
+        f.write("1. Assign each chunk to a reviewer\n")
+        f.write("2. Reviewers should comment with '/reviewed chunk-X' when done\n")
+    
+    logging.debug("Markdown generation complete")
 
 def main():
-    """Main entry point"""
+    args = parse_args()
+    setup_logging(args.debug)
+    
     try:
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--repo", required=True)
-        parser.add_argument("--pr", type=int, required=True)
-        parser.add_argument("--base", required=True)
-        parser.add_argument("--head", required=True)
-        parser.add_argument("--output", default="chunks.md")
-        parser.add_argument("--reviewers", nargs='+', required=True)  # List of reviewers
-        args = parser.parse_args()
-
-        debug_print("\n" + "="*40)
-        debug_print("PR Chunker Debug Information")
-        debug_print("="*40)
-        debug_print(f"Repository: {args.repo}")
-        debug_print(f"PR Number: {args.pr}")
-        debug_print(f"Base SHA: {args.base[:7]}")
-        debug_print(f"Head SHA: {args.head[:7]}")
-        debug_print(f"Output file: {args.output}\n")
-
-        repo = Repo(os.getcwd())
-        debug_print(f"Repo initialized at: {repo.working_dir}")
-
-        chunks = analyze_changes(repo, args.base, args.head)
-        generate_output(
-            chunks=chunks,
-            reviewers=args.reviewers,
-            pr_number=args.pr,
-            repo_name=args.repo,
-            output_file=args.output,
-            head=args.head  # Pass head here
-        )
+        # Initialize GitHub client
+        logging.debug("Initializing GitHub client")
+        github_client = Github(args.github_token)
         
-        debug_print("Chunker completed successfully")
+        # Get PR data
+        pr = get_pr_diff(github_client, args.repo, args.pr)
+        
+        # Process changes
+        file_changes = process_changes(pr, args.base, args.head)
+        logging.info(f"Found {len(file_changes)} changed files")
+        
+        # Create chunks
+        chunks = create_chunks(file_changes)
+        
+        # Generate output
+        generate_markdown(chunks, args.output)
+        
+        logging.info("=== PROCESS COMPLETED SUCCESSFULLY ===")
+        return 0
         
     except Exception as e:
-        print(f"\n❌ Fatal error: {str(e)}")
-        traceback.print_exc()
-        sys.exit(1)
+        logging.error("=== PROCESS FAILED ===")
+        logging.error(f"Error: {str(e)}", exc_info=True)
+        return 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
