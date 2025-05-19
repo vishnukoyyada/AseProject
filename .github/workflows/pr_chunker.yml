@@ -1,8 +1,13 @@
 name: PR Chunker
 
 on:
+  push:
+    branches:
+      - main
+      - '**'       # or specify any branch pattern you want
   pull_request:
-    types: [opened, reopened, synchronize]
+    # triggers on all pull request events (opened, reopened, synchronize, etc.)
+    types: [opened, reopened, synchronize, ready_for_review]
 
 permissions:
   contents: read
