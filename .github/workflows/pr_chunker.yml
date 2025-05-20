@@ -29,7 +29,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r scripts/pr_review/requirements.txt
 
-      - name: Debug default token presence
+      - name: Debug GITHUB_TOKEN presence
         run: |
           if [ -z "$GITHUB_TOKEN" ]; then
             echo "::error::GITHUB_TOKEN is not set!"
