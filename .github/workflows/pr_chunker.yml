@@ -29,28 +29,25 @@ jobs:
       - name: Install dependencies
         run: pip install PyGithub libcst
 
-      - name: Generate review chunks and set as output
-        id: generate-chunks
+      - name: Generate review chunks and write to file
         run: |
-          OUTPUT=$(python scripts/pr_review/chunker.py \
+          python scripts/pr_review/chunker.py \
             --repo "${{ github.repository }}" \
             --pr "${{ github.event.number }}" \
             --base "${{ github.event.pull_request.base.sha }}" \
             --head "${{ github.event.pull_request.head.sha }}" \
-            --github-token "${{ secrets.GITHUB_TOKEN }}")
-          echo "chunks<<EOF" >> $GITHUB_OUTPUT
-          echo "$OUTPUT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+            --github-token "${{ secrets.GITHUB_TOKEN }}" > chunks.md
 
       - name: Post PR comment
-        if: steps.generate-chunks.outcome == 'success'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const fs = require('fs');
+            const content = fs.readFileSync('chunks.md', 'utf8');
             await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `${{ steps.generate-chunks.outputs.chunks }}`
+              body: content
             })
