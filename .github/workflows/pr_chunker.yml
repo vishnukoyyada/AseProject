@@ -30,7 +30,6 @@ jobs:
         run: pip install PyGithub libcst
 
       - name: Generate review chunks and write to file
-        id: generate-chunks
         run: |
           python scripts/pr_review/chunker.py \
             --repo "${{ github.repository }}" \
@@ -40,7 +39,6 @@ jobs:
             --github-token "${{ secrets.GITHUB_TOKEN }}" > chunks.md
 
       - name: Post PR comment
-        if: steps.generate-chunks.outcome == 'success'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
