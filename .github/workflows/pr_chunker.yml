@@ -29,14 +29,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r scripts/pr_review/requirements.txt
 
-      - name: Debug token presence
+      - name: Debug default token presence
         run: |
-          if [ -z "${{ secrets.PAT_TOKEN }}" ]; then
-            echo "::error::PAT_TOKEN is not set!"
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "::error::GITHUB_TOKEN is not set!"
             exit 1
           else
-            echo "PAT_TOKEN is set (length: ${#PAT_TOKEN})"
+            echo "GITHUB_TOKEN is set (length: ${#GITHUB_TOKEN})"
           fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate review chunks
         id: generate-chunks
@@ -47,14 +49,14 @@ jobs:
             --base "${{ github.event.pull_request.base.sha }}" \
             --head "${{ github.event.pull_request.head.sha }}" \
             --output chunks.md \
-            --github-token "${{ secrets.PAT_TOKEN }}" \
+            --github-token "${{ secrets.GITHUB_TOKEN }}" \
             --debug
 
       - name: Post PR comment
         if: steps.generate-chunks.outcome == 'success'
         uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.PAT_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
             const content = fs.readFileSync('chunks.md', 'utf8');
