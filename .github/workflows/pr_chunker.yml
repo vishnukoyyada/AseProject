@@ -1,7 +1,7 @@
 name: PR Chunker
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
 
 permissions:
@@ -15,9 +15,11 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Checkout code
+      - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
           fetch-depth: 0
 
       - name: Set up Python
@@ -29,28 +31,19 @@ jobs:
       - name: Install dependencies
         run: pip install -r scripts/pr_review/requirements.txt
 
-      - name: Debug GITHUB_TOKEN presence
-        run: |
-          if [ -z "$GITHUB_TOKEN" ]; then
-            echo "::error::GITHUB_TOKEN is not set!"
-            exit 1
-          else
-            echo "GITHUB_TOKEN is set (length: ${#GITHUB_TOKEN})"
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Generate review chunks
+      - name: Generate review chunks and set as output
         id: generate-chunks
         run: |
-          python scripts/pr_review/chunker.py \
+          OUTPUT=$(python scripts/pr_review/chunker.py \
             --repo "${{ github.repository }}" \
             --pr "${{ github.event.number }}" \
             --base "${{ github.event.pull_request.base.sha }}" \
             --head "${{ github.event.pull_request.head.sha }}" \
-            --output chunks.md \
             --github-token "${{ secrets.GITHUB_TOKEN }}" \
-            --debug
+            --debug)
+          echo "chunks<<EOF" >> $GITHUB_OUTPUT
+          echo "$OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Post PR comment
         if: steps.generate-chunks.outcome == 'success'
@@ -58,11 +51,9 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const fs = require('fs');
-            const content = fs.readFileSync('chunks.md', 'utf8');
             await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: content
+              body: `${{ steps.generate-chunks.outputs.chunks }}`
             })
