@@ -3,42 +3,48 @@ import argparse
 import sys
 from collections import defaultdict
 import libcst as cst
+from libcst.metadata import PositionProvider, MetadataWrapper
 from github import Github
 
+# --- Chunk Visitor using MetadataWrapper and PositionProvider ---
 class ChunkVisitor(cst.CSTVisitor):
+    METADATA_DEPENDENCIES = (PositionProvider,)
+
     def __init__(self):
+        super().__init__()
         self.chunks = []
         self.current_class = None
 
     def visit_ClassDef(self, node):
         self.current_class = node.name.value
+        pos = self.get_metadata(PositionProvider, node)
         self.chunks.append({
             "type": "Class",
             "name": node.name.value,
-            "start": node.start.line,
-            "end": node.end.line,
+            "start": pos.start.line,
+            "end": pos.end.line,
         })
-        # Continue visiting to find methods
-        super().visit_ClassDef(node)
+
+    def leave_ClassDef(self, node):
         self.current_class = None
 
     def visit_FunctionDef(self, node):
         chunk_name = node.name.value
         if self.current_class:
             chunk_name = f"{self.current_class}.{node.name.value}"
+        pos = self.get_metadata(PositionProvider, node)
         self.chunks.append({
             "type": "Function",
             "name": chunk_name,
-            "start": node.start.line,
-            "end": node.end.line,
+            "start": pos.start.line,
+            "end": pos.end.line,
         })
 
 def get_chunks_from_code(code, filename):
     try:
-        print(f"DEBUG: About to parse code for {filename}:\n{code}\n---", file=sys.stderr)
-        tree = cst.parse_module(code)
+        wrapper = MetadataWrapper(cst.parse_module(code))
         visitor = ChunkVisitor()
-        tree.visit(visitor)
+        wrapper.visit(visitor)
         print(f"DEBUG: Visitor found {len(visitor.chunks)} chunks in {filename}: {visitor.chunks}", file=sys.stderr)
         return visitor.chunks
     except Exception as e:
@@ -120,10 +126,9 @@ def main():
         sys.exit(0)
 
     assignments = chunk_assigner(all_chunks, reviewers)
-
     print(f"DEBUG: Final reviewer assignments: {dict(assignments)}", file=sys.stderr)
 
-    # Generate the output
+    # --- Output Phase ---
     output = [
         f"# PR Review Chunks (PR #{args.pr})",
         f"Repository: {args.repo}",
@@ -137,7 +142,7 @@ def main():
             grouped_by_file[chunk['file']].append(chunk)
         
         for filename, file_chunks in grouped_by_file.items():
-            output.append(f"\n### File: `{filename}`")
+            output.append(f"\n### File: `{filename.split('/')[-1]}`")
             for chunk in file_chunks:
                 symbol = "🧠" if chunk['type'] == "Function" else "🏛️"
                 output.append(f"- {symbol} **{chunk['type']}**: `{chunk['name']}`")
