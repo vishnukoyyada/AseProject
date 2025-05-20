@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import logging
-import os
 import sys
 from github import Github, GithubException
 
@@ -23,7 +22,6 @@ def parse_args():
     parser.add_argument('--pr', required=True, type=int, help='Pull request number')
     parser.add_argument('--base', required=True, help='Base commit SHA')
     parser.add_argument('--head', required=True, help='Head commit SHA')
-    parser.add_argument('--output', required=True, help='Output markdown file path')
     parser.add_argument('--github-token', required=True, help='GitHub access token')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     return parser.parse_args()
@@ -88,20 +86,18 @@ def get_file_type(filename):
         return 'documentation'
     return 'other'
 
-def generate_markdown(chunks, output_file):
-    logging.info(f"Generating markdown output to {output_file}")
-    with open(output_file, 'w') as f:
-        f.write("# PR Review Chunks\n\n")
-        f.write("Here are the logical chunks for review:\n\n")
-        for i, chunk in enumerate(chunks, 1):
-            f.write(f"## Chunk {i}: {chunk['description']}\n")
-            f.write(f"- **Files**: {', '.join(chunk['files'])}\n")
-            f.write(f"- **Changes**: {chunk['changes']}\n")
-            f.write(f"- **Type**: {chunk['type']}\n\n")
-        f.write("\n## Review Instructions\n")
-        f.write("1. Assign each chunk to a reviewer\n")
-        f.write("2. Reviewers should comment with '/reviewed chunk-X' when done\n")
-    logging.debug("Markdown generation complete")
+def generate_markdown(chunks):
+    output = "# PR Review Chunks\n\n"
+    output += "Here are the logical chunks for review:\n\n"
+    for i, chunk in enumerate(chunks, 1):
+        output += f"## Chunk {i}: {chunk['description']}\n"
+        output += f"- **Files**: {', '.join(chunk['files'])}\n"
+        output += f"- **Changes**: {chunk['changes']}\n"
+        output += f"- **Type**: {chunk['type']}\n\n"
+    output += "\n## Review Instructions\n"
+    output += "1. Assign each chunk to a reviewer\n"
+    output += "2. Reviewers should comment with '/reviewed chunk-X' when done\n"
+    return output
 
 def main():
     args = parse_args()
@@ -113,7 +109,8 @@ def main():
         file_changes = process_changes(pr, args.base, args.head)
         logging.info(f"Found {len(file_changes)} changed files")
         chunks = create_chunks(file_changes)
-        generate_markdown(chunks, args.output)
+        markdown = generate_markdown(chunks)
+        print(markdown)  # Print markdown to stdout
         logging.info("=== PROCESS COMPLETED SUCCESSFULLY ===")
         return 0
     except Exception as e:
