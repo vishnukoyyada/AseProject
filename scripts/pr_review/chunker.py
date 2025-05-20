@@ -8,21 +8,30 @@ from github import Github
 class ChunkVisitor(cst.CSTVisitor):
     def __init__(self):
         self.chunks = []
-
-    def visit_FunctionDef(self, node):
-        self.chunks.append({
-            "type": "Function",
-            "name": node.name.value,
-            "start": node.body.start.line,
-            "end": node.body.end.line,
-        })
+        self.current_class = None
 
     def visit_ClassDef(self, node):
+        self.current_class = node.name.value
         self.chunks.append({
             "type": "Class",
             "name": node.name.value,
-            "start": node.body.start.line,
-            "end": node.body.end.line,
+            "start": node.start.line,
+            "end": node.end.line,
+        })
+        # Continue visiting to find methods
+        super().visit_ClassDef(node)
+        self.current_class = None
+
+    def visit_FunctionDef(self, node):
+        chunk_name = node.name.value
+        if self.current_class:
+            chunk_name = f"{self.current_class}.{node.name.value}"
+            
+        self.chunks.append({
+            "type": "Function",
+            "name": chunk_name,
+            "start": node.start.line,
+            "end": node.end.line,
         })
 
 def get_chunks_from_code(code):
@@ -74,20 +83,21 @@ def main():
     file_map = {}
 
     for f in pr.get_files():
-        print(f"DEBUG: PR file: {f.filename}", file=sys.stderr)
+        print(f"DEBUG: Processing file: {f.filename}", file=sys.stderr)
         if not f.filename.endswith(".py"):
             print(f"DEBUG: Skipping non-Python file: {f.filename}", file=sys.stderr)
             continue
 
         try:
             file_content = repo.get_contents(f.filename, ref=args.head).decoded_content.decode()
+            print(f"DEBUG: Successfully fetched content for {f.filename}", file=sys.stderr)
         except Exception as e:
             print(f"DEBUG: Could not fetch file content for {f.filename} at {args.head}: {e}", file=sys.stderr)
             continue
 
-        print(f"DEBUG: File content for {f.filename}:\n{file_content}\n---", file=sys.stderr)
         chunks = get_chunks_from_code(file_content)
-        print(f"DEBUG: Chunks found in {f.filename}: {chunks}", file=sys.stderr)
+        print(f"DEBUG: Found {len(chunks)} chunks in {f.filename}: {chunks}", file=sys.stderr)
+        
         if chunks:
             for chunk in chunks:
                 chunk["file"] = f.filename
@@ -101,22 +111,28 @@ def main():
 
     assignments = chunk_assigner(all_chunks, reviewers)
 
-    print(f"# PR Review Chunks (PR #{args.pr})")
-    print(f"Repository: {args.repo}")
-    print(f"Reviewers: {', '.join(reviewers)}")
+    # Generate the output
+    output = [
+        f"# PR Review Chunks (PR #{args.pr})",
+        f"Repository: {args.repo}",
+        f"Reviewers: {', '.join(reviewers)}\n"
+    ]
     
     for reviewer, chunks in assignments.items():
-        print(f"\n## Reviewer: {reviewer}")
+        output.append(f"\n## Reviewer: {reviewer}")
         grouped_by_file = defaultdict(list)
         for chunk in chunks:
             grouped_by_file[chunk['file']].append(chunk)
+        
         for filename, file_chunks in grouped_by_file.items():
-            print(f"\n### File: `{filename}`")
-            for idx, chunk in enumerate(file_chunks, 1):
+            output.append(f"\n### File: `{filename}`")
+            for chunk in file_chunks:
                 symbol = "🧠" if chunk['type'] == "Function" else "🏛️"
-                print(f"- {symbol} **{chunk['type']}**: `{chunk['name']}`")
-                print(f"  - Lines: {chunk['start']}–{chunk['end']}")
-                print(f"  - [View Code]({chunk['link']})")
+                output.append(f"- {symbol} **{chunk['type']}**: `{chunk['name']}`")
+                output.append(f"  - Lines: {chunk['start']}–{chunk['end']}")
+                output.append(f"  - [View Code]({chunk['link']})")
+
+    print("\n".join(output))
 
 if __name__ == "__main__":
     main()
