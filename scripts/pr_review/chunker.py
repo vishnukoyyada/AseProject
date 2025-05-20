@@ -3,10 +3,8 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime
 from github import Github, GithubException
 
-# Configure logging
 def setup_logging(debug=False):
     log_level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(
@@ -36,13 +34,11 @@ def get_pr_diff(github_client, repo_name, pr_number):
         repo = github_client.get_repo(repo_name)
         pr = repo.get_pull(pr_number)
         commits = list(pr.get_commits())
-        
         logging.info(f"PR Title: {pr.title}")
         logging.info(f"PR Author: {pr.user.login}")
         logging.info(f"Commit count: {len(commits)}")
         logging.debug(f"First commit: {commits[0].sha if commits else 'None'}")
         logging.debug(f"Last commit: {commits[-1].sha if commits else 'None'}")
-        
         return pr
     except GithubException as e:
         logging.error(f"Failed to fetch PR: {str(e)}")
@@ -52,13 +48,11 @@ def process_changes(pr, base_sha, head_sha):
     logging.info("Processing changes...")
     files = pr.get_files()
     file_changes = []
-    
     for file in files:
         logging.debug(f"File: {file.filename}")
         logging.debug(f"Status: {file.status}")
         logging.debug(f"Changes: {file.changes} additions, {file.deletions} deletions")
         logging.debug(f"Patch preview: {file.patch[:100] if file.patch else 'No patch'}")
-        
         file_changes.append({
             'filename': file.filename,
             'status': file.status,
@@ -66,14 +60,11 @@ def process_changes(pr, base_sha, head_sha):
             'deletions': file.deletions,
             'patch': file.patch
         })
-    
     return file_changes
 
 def create_chunks(file_changes):
     logging.info("Creating review chunks...")
     chunks = []
-    
-    # Simple chunking strategy - group by file type and size
     for change in file_changes:
         chunk = {
             'files': [change['filename']],
@@ -83,8 +74,6 @@ def create_chunks(file_changes):
         }
         chunks.append(chunk)
         logging.debug(f"Created chunk: {chunk['description']}")
-    
-    # More sophisticated chunking logic would go here
     logging.info(f"Created {len(chunks)} chunks")
     return chunks
 
@@ -101,48 +90,32 @@ def get_file_type(filename):
 
 def generate_markdown(chunks, output_file):
     logging.info(f"Generating markdown output to {output_file}")
-    
     with open(output_file, 'w') as f:
         f.write("# PR Review Chunks\n\n")
         f.write("Here are the logical chunks for review:\n\n")
-        
         for i, chunk in enumerate(chunks, 1):
             f.write(f"## Chunk {i}: {chunk['description']}\n")
             f.write(f"- **Files**: {', '.join(chunk['files'])}\n")
             f.write(f"- **Changes**: {chunk['changes']}\n")
             f.write(f"- **Type**: {chunk['type']}\n\n")
-        
         f.write("\n## Review Instructions\n")
         f.write("1. Assign each chunk to a reviewer\n")
         f.write("2. Reviewers should comment with '/reviewed chunk-X' when done\n")
-    
     logging.debug("Markdown generation complete")
 
 def main():
     args = parse_args()
     setup_logging(args.debug)
-    
     try:
-        # Initialize GitHub client
         logging.debug("Initializing GitHub client")
         github_client = Github(args.github_token)
-        
-        # Get PR data
         pr = get_pr_diff(github_client, args.repo, args.pr)
-        
-        # Process changes
         file_changes = process_changes(pr, args.base, args.head)
         logging.info(f"Found {len(file_changes)} changed files")
-        
-        # Create chunks
         chunks = create_chunks(file_changes)
-        
-        # Generate output
         generate_markdown(chunks, args.output)
-        
         logging.info("=== PROCESS COMPLETED SUCCESSFULLY ===")
         return 0
-        
     except Exception as e:
         logging.error("=== PROCESS FAILED ===")
         logging.error(f"Error: {str(e)}", exc_info=True)

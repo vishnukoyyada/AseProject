@@ -1,0 +1,20 @@
+2025-05-20 04:53:40,519 - INFO - === STARTING PR CHUNKER ===
+2025-05-20 04:53:40,783 - ERROR - Failed to fetch PR: 401 {"message": "Bad credentials", "documentation_url": "https://docs.github.com/rest", "status": "401"}
+2025-05-20 04:53:40,783 - ERROR - === PROCESS FAILED ===
+2025-05-20 04:53:40,783 - ERROR - Error: 401 {"message": "Bad credentials", "documentation_url": "https://docs.github.com/rest", "status": "401"}
+Traceback (most recent call last):
+  File "/Users/vishnuvardhan/Documents/FHKiel/ASEProject/AseProject/scripts/pr_review/chunker.py", line 131, in main
+    pr = get_pr_diff(github_client, args.repo, args.pr)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/vishnuvardhan/Documents/FHKiel/ASEProject/AseProject/scripts/pr_review/chunker.py", line 36, in get_pr_diff
+    repo = github_client.get_repo(repo_name)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/vishnuvardhan/.local/lib/python3.12/site-packages/github/MainClass.py", line 471, in get_repo
+    headers, data = self.__requester.requestJsonAndCheck("GET", url)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/vishnuvardhan/.local/lib/python3.12/site-packages/github/Requester.py", line 624, in requestJsonAndCheck
+    return self.__check(
+           ^^^^^^^^^^^^^
+  File "/Users/vishnuvardhan/.local/lib/python3.12/site-packages/github/Requester.py", line 792, in __check
+    raise self.createException(status, responseHeaders, data)
+github.GithubException.BadCredentialsException: 401 {"message": "Bad credentials", "documentation_url": "https://docs.github.com/rest", "status": "401"}

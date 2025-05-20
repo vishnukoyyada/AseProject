@@ -2,37 +2,23 @@ name: PR Chunker
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, ready_for_review]
 
 permissions:
   contents: read
-  pull-requests: write
   issues: write
+  pull-requests: write
 
 jobs:
   chunk-and-review:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    
-    steps:
-      - name: Debug initial environment
-        run: |
-          echo "=== DEBUG: INITIAL ENVIRONMENT ==="
-          echo "Repository: ${{ github.repository }}"
-          echo "PR Number: ${{ github.event.number }}"
-          echo "Is Fork: ${{ github.event.pull_request.head.repo.full_name != github.repository }}"
-          echo "Head Repo: ${{ github.event.pull_request.head.repo.full_name }}"
-          echo "Head Ref: ${{ github.event.pull_request.head.ref }}"
 
+    steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # For fork PRs
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
-          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -41,26 +27,34 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
+        run: pip install -r scripts/pr_review/requirements.txt
+
+      - name: Debug token presence
         run: |
-          pip install -r scripts/pr_review/requirements.txt
+          if [ -z "${{ secrets.PAT_TOKEN }}" ]; then
+            echo "::error::PAT_TOKEN is not set!"
+            exit 1
+          else
+            echo "PAT_TOKEN is set (length: ${#PAT_TOKEN})"
+          fi
 
       - name: Generate review chunks
         id: generate-chunks
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python scripts/pr_review/chunker.py \
-            --repo ${{ github.repository }} \
-            --pr ${{ github.event.number }} \
-            --base ${{ github.event.pull_request.base.sha }} \
-            --head ${{ github.event.pull_request.head.sha }} \
-            --output chunks.md
+            --repo "${{ github.repository }}" \
+            --pr "${{ github.event.number }}" \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --output chunks.md \
+            --github-token "${{ secrets.PAT_TOKEN }}" \
+            --debug
 
       - name: Post PR comment
         if: steps.generate-chunks.outcome == 'success'
         uses: actions/github-script@v6
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PAT_TOKEN }}
           script: |
             const fs = require('fs');
             const content = fs.readFileSync('chunks.md', 'utf8');
@@ -69,29 +63,4 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: content
-            });
-
-      - name: Create review issue
-        if: steps.generate-chunks.outcome == 'success'
-        uses: peter-evans/create-issue-from-file@v4
-        with:
-          title: "PR#${{ github.event.number }} Review Assignments"
-          content-filepath: ./chunks.md
-          labels: "code-review"
-          assignees: ${{ join(github.event.pull_request.requested_reviewers.*.login) }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Handle failure
-        if: steps.generate-chunks.outcome != 'success'
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: '❌ Automatic chunking failed\n\n' +
-                    'Please review manually: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.number }}\n\n' +
-                    'Error details available in workflow logs.'
-            });
+            })
