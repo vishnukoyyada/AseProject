@@ -26,7 +26,6 @@ class ChunkVisitor(cst.CSTVisitor):
         chunk_name = node.name.value
         if self.current_class:
             chunk_name = f"{self.current_class}.{node.name.value}"
-            
         self.chunks.append({
             "type": "Function",
             "name": chunk_name,
@@ -34,14 +33,16 @@ class ChunkVisitor(cst.CSTVisitor):
             "end": node.end.line,
         })
 
-def get_chunks_from_code(code):
+def get_chunks_from_code(code, filename):
     try:
+        print(f"DEBUG: About to parse code for {filename}:\n{code}\n---", file=sys.stderr)
         tree = cst.parse_module(code)
         visitor = ChunkVisitor()
         tree.visit(visitor)
+        print(f"DEBUG: Visitor found {len(visitor.chunks)} chunks in {filename}: {visitor.chunks}", file=sys.stderr)
         return visitor.chunks
     except Exception as e:
-        print(f"DEBUG: Exception during parsing: {e}", file=sys.stderr)
+        print(f"DEBUG: Exception during parsing {filename}: {e}", file=sys.stderr)
         return []
 
 def chunk_assigner(chunks, reviewers):
@@ -49,6 +50,7 @@ def chunk_assigner(chunks, reviewers):
     for idx, chunk in enumerate(chunks):
         reviewer = reviewers[idx % len(reviewers)]
         assignments[reviewer].append(chunk)
+        print(f"DEBUG: Assigned chunk {chunk} to reviewer {reviewer}", file=sys.stderr)
     return assignments
 
 def extract_reviewers(pr):
@@ -61,7 +63,9 @@ def extract_reviewers(pr):
                 reviewers.add(f"@{review.user.login}")
     except Exception as e:
         print(f"DEBUG: Exception extracting reviewers: {e}", file=sys.stderr)
-    return list(reviewers) or ["@vishnukoyyada", "@kvishnuv1403"]
+    result = list(reviewers) or ["@vishnukoyyada", "@kvishnuv1403"]
+    print(f"DEBUG: Reviewers detected: {result}", file=sys.stderr)
+    return result
 
 def main():
     parser = argparse.ArgumentParser(description='PR Chunker')
@@ -77,12 +81,16 @@ def main():
     pr = repo.get_pull(args.pr)
 
     reviewers = extract_reviewers(pr)
-    print(f"DEBUG: Reviewers detected: {reviewers}", file=sys.stderr)
+
+    print("DEBUG: Listing all files in PR:", file=sys.stderr)
+    all_files = list(pr.get_files())
+    for f in all_files:
+        print(f"DEBUG: PR file: {f.filename}", file=sys.stderr)
 
     all_chunks = []
     file_map = {}
 
-    for f in pr.get_files():
+    for f in all_files:
         print(f"DEBUG: Processing file: {f.filename}", file=sys.stderr)
         if not f.filename.endswith(".py"):
             print(f"DEBUG: Skipping non-Python file: {f.filename}", file=sys.stderr)
@@ -91,11 +99,12 @@ def main():
         try:
             file_content = repo.get_contents(f.filename, ref=args.head).decoded_content.decode()
             print(f"DEBUG: Successfully fetched content for {f.filename}", file=sys.stderr)
+            print(f"DEBUG: Content for {f.filename}:\n{file_content}\n---", file=sys.stderr)
         except Exception as e:
             print(f"DEBUG: Could not fetch file content for {f.filename} at {args.head}: {e}", file=sys.stderr)
             continue
 
-        chunks = get_chunks_from_code(file_content)
+        chunks = get_chunks_from_code(file_content, f.filename)
         print(f"DEBUG: Found {len(chunks)} chunks in {f.filename}: {chunks}", file=sys.stderr)
         
         if chunks:
@@ -105,11 +114,14 @@ def main():
             all_chunks.extend(chunks)
             file_map[f.filename] = chunks
 
+    print(f"DEBUG: Total chunks found: {len(all_chunks)}", file=sys.stderr)
     if not all_chunks:
         print(f"# PR Review Chunks (PR #{args.pr})\nRepository: {args.repo}\n\nNo functions or classes detected for chunking in changed Python files.")
         sys.exit(0)
 
     assignments = chunk_assigner(all_chunks, reviewers)
+
+    print(f"DEBUG: Final reviewer assignments: {dict(assignments)}", file=sys.stderr)
 
     # Generate the output
     output = [
