@@ -32,6 +32,7 @@ def get_chunks_from_code(code):
         tree.visit(visitor)
         return visitor.chunks
     except Exception as e:
+        print(f"DEBUG: Exception during parsing: {e}", file=sys.stderr)
         return []
 
 def chunk_assigner(chunks, reviewers):
@@ -43,10 +44,14 @@ def chunk_assigner(chunks, reviewers):
 
 def extract_reviewers(pr):
     reviewers = set()
-    for r in pr.get_review_requests()[0]:
-        reviewers.add(f"@{r.login}")
-    for review in pr.get_reviews():
-        reviewers.add(f"@{review.user.login}")
+    try:
+        for r in pr.get_review_requests()[0]:
+            reviewers.add(f"@{r.login}")
+        for review in pr.get_reviews():
+            if review.user:
+                reviewers.add(f"@{review.user.login}")
+    except Exception as e:
+        print(f"DEBUG: Exception extracting reviewers: {e}", file=sys.stderr)
     return list(reviewers) or ["@vishnukoyyada", "@kvishnuv1403"]
 
 def main():
@@ -63,16 +68,26 @@ def main():
     pr = repo.get_pull(args.pr)
 
     reviewers = extract_reviewers(pr)
+    print(f"DEBUG: Reviewers detected: {reviewers}", file=sys.stderr)
 
     all_chunks = []
     file_map = {}
 
     for f in pr.get_files():
+        print(f"DEBUG: PR file: {f.filename}", file=sys.stderr)
         if not f.filename.endswith(".py"):
+            print(f"DEBUG: Skipping non-Python file: {f.filename}", file=sys.stderr)
             continue
 
-        file_content = repo.get_contents(f.filename, ref=args.head).decoded_content.decode()
+        try:
+            file_content = repo.get_contents(f.filename, ref=args.head).decoded_content.decode()
+        except Exception as e:
+            print(f"DEBUG: Could not fetch file content for {f.filename} at {args.head}: {e}", file=sys.stderr)
+            continue
+
+        print(f"DEBUG: File content for {f.filename}:\n{file_content}\n---", file=sys.stderr)
         chunks = get_chunks_from_code(file_content)
+        print(f"DEBUG: Chunks found in {f.filename}: {chunks}", file=sys.stderr)
         if chunks:
             for chunk in chunks:
                 chunk["file"] = f.filename
