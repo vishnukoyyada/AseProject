@@ -4,9 +4,8 @@ on:
   push:
     branches:
       - main
-      - '**'       # or specify any branch pattern you want
+      - '**'
   pull_request:
-    # triggers on all pull request events (opened, reopened, synchronize, etc.)
     types: [opened, reopened, synchronize, ready_for_review]
 
 permissions:
@@ -18,7 +17,7 @@ permissions:
 jobs:
   chunk-and-review:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
@@ -27,127 +26,44 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Debug checkout
-        run: |
-          echo "=== DEBUG: CHECKOUT ==="
-          echo "Current directory contents:"
-          ls -la
-          echo "Git log (last 5 commits):"
-          git log --oneline -n 5
-          echo "Git status:"
-          git status
-          echo "Git remote -v:"
-          git remote -v
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Debug Python setup
-        run: |
-          echo "=== DEBUG: PYTHON ENVIRONMENT ==="
-          echo "Python version:"
-          python --version
-          echo "Pip version:"
-          pip --version
-          echo "Python path:"
-          which python
-
       - name: Install dependencies
-        run: |
-          echo "=== DEBUG: DEPENDENCIES ==="
-          echo "Requirements file contents:"
-          cat scripts/pr_review/requirements.txt
-          pip install -r scripts/pr_review/requirements.txt
-          echo "Installed packages:"
-          pip freeze
+        run: pip install -r scripts/pr_review/requirements.txt
 
-      - name: Debug workflow inputs
+      - name: Verify PAT
         run: |
-          echo "=== DEBUG: WORKFLOW INPUTS ==="
-          echo "Repository: ${{ github.repository }}"
-          echo "PR Number: ${{ github.event.number }}"
-          echo "Base SHA: ${{ github.event.pull_request.base.sha }}"
-          echo "Head SHA: ${{ github.event.pull_request.head.sha }}"
-          echo "Requested Reviewers: ${{ toJSON(github.event.pull_request.requested_reviewers) }}"
-          echo "GITHUB_TOKEN exists: ${{ secrets.GITHUB_TOKEN != '' }}"
+          echo "Testing PAT access..."
+          curl -s -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
+            https://api.github.com/user | jq .login
 
       - name: Generate review chunks
         id: generate-chunks
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEBUG_MODE: "true"
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          echo "=== DEBUG: RUNNING CHUNKER ==="
           python scripts/pr_review/chunker.py \
             --repo ${{ github.repository }} \
             --pr ${{ github.event.number }} \
             --base ${{ github.event.pull_request.base.sha }} \
             --head ${{ github.event.pull_request.head.sha }} \
             --output chunks.md \
-            --github-token ${{ secrets.GITHUB_TOKEN }} \
+            --github-token ${{ secrets.PAT_TOKEN }} \
             --debug
-          
-          echo "=== DEBUG: CHUNKER OUTPUT ==="
-          if [ -f "chunks.md" ]; then
-            echo "chunks.md exists. First 20 lines:"
-            head -n 20 chunks.md
-          else
-            echo "chunks.md was not created!"
-          fi
-          
-          if [ -f "chunker_debug.log" ]; then
-            echo "Debug log contents:"
-            cat chunker_debug.log
-          fi
 
       - name: Post PR comment
         if: steps.generate-chunks.outcome == 'success'
-        run: |
-          echo "=== DEBUG: POSTING PR COMMENT ==="
-          echo "Chunks.md content (first 10 lines):"
-          head -n 10 chunks.md
-          
-          COMMENT_CONTENT=$(cat chunks.md)
-          echo "Comment body length: ${#COMMENT_CONTENT} characters"
-          
-          gh pr comment ${{ github.event.number }} --body-file chunks.md
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create review issue
-        if: steps.generate-chunks.outcome == 'success'
-        run: |
-          echo "=== DEBUG: CREATING REVIEW ISSUE ==="
-          echo "Reviewers to assign:"
-          echo "${{ toJSON(github.event.pull_request.requested_reviewers.*.login) }}"
-          
-          # Create issue with gh CLI
-          gh issue create \
-            --title "PR#${{ github.event.number }} Review Assignments" \
-            --body "$(cat chunks.md)" \
-            --label "code-review" \
-            --assignee "${{ github.event.pull_request.requested_reviewers.*.login }}" \
-            --repo "${{ github.repository }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Post failure notice
-        if: steps.generate-chunks.outcome != 'success'
-        run: |
-          echo "=== DEBUG: POSTING FAILURE NOTICE ==="
-          ERROR_MSG="❌ Automatic chunking failed\n\n"
-          ERROR_MSG+="Please review manually: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.number }}\n\n"
-          ERROR_MSG+="Last error from debug log:\n"
-          
-          if [ -f "chunker_debug.log" ]; then
-            ERROR_MSG+="$(tail -n 10 chunker_debug.log)"
-          else
-            ERROR_MSG+="No debug log found"
-          fi
-          
-          gh pr comment ${{ github.event.number }} --body "$ERROR_MSG"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.PAT_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const content = fs.readFileSync('chunks.md', 'utf8');
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.re
